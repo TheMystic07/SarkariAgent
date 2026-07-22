@@ -73,11 +73,27 @@ function startSweeper(): void {
   (sweeper as unknown as { unref?: () => void }).unref?.();
 }
 
+const maxSessions = () => Number(process.env.MAX_BROWSER_SESSIONS ?? 12);
+
 async function getSession(chatId: number): Promise<BrowserSession> {
   let s = sessions.get(chatId);
   if (s) {
     s.lastUsed = Date.now();
     return s;
+  }
+  // Cap concurrent browser sessions so many parallel users don't exhaust memory.
+  // Reclaim the most-idle session if it's been idle a while; otherwise degrade
+  // gracefully (the tool relays a "busy, try again" message to that user).
+  if (sessions.size >= maxSessions()) {
+    let idlest: [number, BrowserSession] | undefined;
+    for (const e of sessions) if (!idlest || e[1].lastUsed < idlest[1].lastUsed) idlest = e;
+    if (idlest && Date.now() - idlest[1].lastUsed > 120_000) {
+      await closeSession(idlest[0]);
+    } else {
+      throw new Error(
+        "The system is handling many form-filling sessions right now. Ask the user to try again in a minute.",
+      );
+    }
   }
   startSweeper();
   const browser = await getBrowser();
